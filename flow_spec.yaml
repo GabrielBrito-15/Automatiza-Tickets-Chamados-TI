@@ -1,0 +1,112 @@
+# Especificação do Fluxo de Automatização (YAML)
+# Representação declarativa do fluxo descrito no documento.
+# Data de referência: 2025-08-11 (fuso -03)
+
+meta:
+  name: "Automatização de Criação de Chamados"
+  platform: "Microsoft Power Automate"
+  integrations:
+    - Microsoft Teams
+    - Office 365 Users
+    - Outlook Office 365
+  owner: "Equipe de Suporte / TI"
+  objective: "Agilizar abertura, notificação e confirmação de tickets a partir de menções no Teams."
+
+trigger:
+  type: "teams.keywordMention"
+  description: "Dispara quando palavras-chave específicas são mencionadas em um chat/canal do Teams."
+  outputs:
+    - messageId
+    - teamId
+    - channelId
+    - authorUserId
+    - mentionedKeywords
+
+steps:
+  - id: "for_each_mention"
+    type: "loop"
+    description: "Itera sobre cada menção detectada."
+    children:
+      - id: "get_parent_message"
+        type: "teams.getParentMessage"
+        inputs:
+          messageId: "@{triggerOutputs().messageId}"
+        outputs:
+          - parentMessage
+      - id: "get_user_details"
+        type: "o365.users.getUser"
+        inputs:
+          userId: "@{triggerOutputs().authorUserId}"
+        outputs:
+          - user.displayName
+          - user.mail
+      - id: "get_message_details"
+        type: "teams.getMessage"
+        inputs:
+          messageId: "@{triggerOutputs().messageId}"
+        outputs:
+          - message.text
+          - message.metadata
+
+      - id: "compose_email_subject"
+        type: "compose"
+        inputs:
+          template: "[Ticket] Nova solicitação via Teams - @{user.displayName}"
+        outputs:
+          - emailSubject
+
+      - id: "compose_email_body"
+        type: "compose"
+        inputs:
+          template: |
+            Origem: Teams
+            Autor: @{user.displayName} <@{user.mail}>
+            Texto: @{message.text}
+            Metadados: @{string(message.metadata)}
+        outputs:
+          - emailBody
+
+      - id: "send_email"
+        type: "outlook.sendEmailV2"
+        inputs:
+          to: "suporte@empresa.com"
+          subject: "@{emailSubject}"
+          body: "@{emailBody}"
+        outputs: []
+
+      - id: "delay"
+        type: "control.delay"
+        inputs:
+          duration: "PT2M" # exemplo: 2 minutos; ajustar conforme necessidade
+        outputs: []
+
+      - id: "get_emails"
+        type: "outlook.getEmailsV3"
+        inputs:
+          query: "subject:'Nova solicitação via Teams' newer_than:1d"
+        outputs:
+          - emails[]
+
+      - id: "for_each_email"
+        type: "loop"
+        each: "@{emails}"
+        children:
+          - id: "extract_ticket_id"
+            type: "compose"
+            inputs:
+              expression: "coalesce(match(items('for_each_email').subject, 'Ticket\\s*(\\d+)'), 'TICKET-PENDENTE')"
+            outputs:
+              - ticketId
+
+      - id: "post_confirmation_to_teams"
+        type: "teams.postReply"
+        inputs:
+          channelId: "@{triggerOutputs().channelId}"
+          messageId: "@{triggerOutputs().messageId}"
+          text: "✅ Ticket @{ticketId} criado/atualizado para a sua solicitação."
+        outputs: []
+
+notes:
+  - "Adicionar validação de keywords e regras anti-spam."
+  - "Padronizar assunto para facilitar parsing do ticketId."
+  - "Persistir ticketId e contexto em base de dados para auditoria."
